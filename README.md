@@ -1,57 +1,252 @@
+# Team 5 — NYC Housing Signals Pipeline
 
-MS in Business Analytics candidate at UCLA Anderson (December 2026), based in Los Angeles. Previously a data analyst at LINE Taiwan and a data and GTM operations intern at Bobyard. BA in Philosophy, National Taiwan University.
+This project builds an end-to-end data pipeline to analyze whether high-frequency nuisance complaints (**NYC 311**) act as leading indicators of housing price growth (**Zillow**) at the ZIP-code level from **2020–2024**. 
 
-[LinkedIn](www.linkedin.com/in/chen-che-chang) · ffrankychang@gmail.com
+The system integrates Zillow prices, 311 complaints, Census socioeconomic data, and population statistics into a unified **Snowflake** model, powering **Tableau** dashboards for trend exploration.
+
+> **Key Hypothesis:** High-frequency "friction" (311 complaints) can predict real estate trends before slower, traditional Census updates reflect those changes.
+
+**Here's our final dashboard link created on Tableau, showing our analysis: https://public.tableau.com/app/profile/jinwoo.roh/viz/405_Team5/Story1?publish=yes**
+---
+
+## 1. Pipeline Architecture
+
+The pipeline follows a modern data stack approach, utilizing cloud storage as a data lake and Spark for heavy lifting.
+
+### Workflow components:
+* **Sources:** Zillow, NYC 311 Open Data, US Census Bureau.
+* **Storage (GCS):** Acts as the raw and processed data lake.
+* **Processing (Spark on Dataproc):** Handles cleaning, dimensional reduction (311), and reshaping Zillow data from wide to long format.
+* **Warehouse (Snowflake):** Two-tier architecture (**STAGING** for ingestion → **PRODUCTION** for fact/dimension modeling).
+* **Orchestration:** Controlled via `pipeline/pipeline.sh`.
 
 ---
 
-### Holiday release effects on US box office
+## 2. Prerequisites
 
-[Repository](https://github.com/Jess-ChangTW/movie-holiday-boxoffice) · [Project page](https://jess-changtw.github.io/movie-holiday-boxoffice/) · [Tableau story](https://public.tableau.com/app/profile/chen.che.chang1002/viz/holiday_box_office/Story1)
+### 2.1 Accounts & Services
+* **Google Cloud Platform:** GCS and Dataproc enabled.
+* **Snowflake Account:** Access to create databases and warehouses.
+* **NYC Open Data:** [API Token](https://api.census.gov/data/key_signup.html) for 311 data.
 
-Studios release horror films before Halloween and romance films before Valentine's Day. This project measures whether that strategy pays off, and how much of the effect comes from the holiday itself rather than from studios scheduling their biggest films on those dates.
+### 2.2 Environment Setup
+Create a `pipeline.env` file inside the `/pipeline` directory based on the template below:
 
-[![Box office dashboard](https://raw.githubusercontent.com/Jess-ChangTW/movie-holiday-boxoffice/main/images/dashboard_boxoffice.png)](https://public.tableau.com/app/profile/chen.che.chang1002/viz/holiday_box_office/Story1)
+```bash
+# Snowflake Configuration
+SNOWFLAKE_ACCOUNT=your_account
+SNOWFLAKE_USER=your_username
+SNOWFLAKE_PASSWORD=your_password
+SNOWFLAKE_ROLE=your_account_role
+SNOWFLAKE_DATABASE=NYC_HOUSING_DB
+SNOWFLAKE_SCHEMA=STAGING
+SNOWFLAKE_WAREHOUSE=your_warehouse_name
+SNOWFLAKE_STAGE=your_stage_name
 
-**Data.** 56,393 US theatrical titles from the TMDB API, matched to US domestic gross from the OMDb API. Main sample of 2,636 films (2010-2025) with at least $1M gross, excluding re-releases.
+# GCP / GCS Configuration
+GCS_BUCKET=your_bucket_name
+GCP_PROJECT_ID=your_project_id
 
-**Findings**
-- Horror's share of weekly releases rises from a 20% average to 30-34% in the five weeks before Halloween. Romance clusters in the week before Valentine's Day.
-- In the Halloween window, horror's median gross is $36.7M vs $22.8M at other times, while the median for all other films falls from $24.1M to $11.3M.
-- After controlling for budget, franchise, MPA rating, IMDb rating, year and month, genre-matched films still earn about 50-60% more in holiday windows (horror p ≈ 0.01, romance p ≈ 0.04). About half of the raw premium is explained by studio selection.
+# Dataproc
+DATAPROC_CLUSTER=your_cluster_name
+DATAPROC_REGION=your_region
 
-**Methods.** Two-proportion z-tests, bootstrap confidence intervals, difference-in-differences on log gross, OLS with a genre x window interaction and robust standard errors, robustness checks across window widths and sample definitions.
+# API Tokens
+NYC_APP_TOKEN=your_nyc_open_data_token
+```
+---
 
-**Tools.** Python (pandas, statsmodels), REST APIs, Tableau
+## 3. Installation & Setup
+
+### 3.1 Google Cloud Infrastructure
+This section explains how to set up the required Google Cloud resources for the NYC Housing pipeline, including:
+
+•⁠  ⁠enabling required APIs
+•⁠  ⁠creating the GCS bucket
+•⁠  ⁠creating the Dataproc cluster
+•⁠  ⁠authenticating locally
+•⁠  ⁠verifying the setup
+
+1.  Prerequisites
+Before running the pipeline, make sure you have:
+•⁠  ⁠a Google Cloud project
+•⁠  ⁠billing enabled on the project
+•⁠  ⁠access to Google Cloud Console
+•⁠  ⁠⁠ `gcloud` ⁠ installed locally
+•⁠  ⁠⁠ `gsutil` ⁠ installed locally
+•⁠  ⁠Python installed locally
+•⁠  ⁠SnowSQL installed locally if you are loading data into Snowflake
+
+2. Set the active GCP project
+Run this first in your terminal:
+
+```bash
+gcloud config set project your_project_name
+```
+3. Enable required APIs
+
+The following APIs must be enabled before using GCS and Dataproc:
+
+- Dataproc API
+- Compute Engine API
+- Cloud Storage API
+- IAM API
+
+Option A: Enable in the UI
+
+Go to the Google Cloud Console API Library and enable:
+
+- Dataproc API
+- Compute Engine API
+- Cloud Storage API
+- Identity and Access Management (IAM) API
+
+Option B: Enable using CLI
+
+```bash
+gcloud services enable \
+  dataproc.googleapis.com \
+  compute.googleapis.com \
+  storage.googleapis.com \
+  iam.googleapis.com
+```
+
+4.  **Create a GCS bucket:** `gs://your_bucket_name`.
+<img width="370" height="276" alt="image" src="https://github.com/user-attachments/assets/4d74e3fd-09da-4773-8f55-ac5dcaa81564" />
+
+Your folder structure inside GCS should be exactly the same
+
+5.  **Create a Dataproc cluster:** Ensure the region matches your `DATAPROC_REGION` in the `.env` file.
+
+```bash
+gcloud dataproc clusters create your_cluster_name \
+  --region=us-west1 \
+  --zone=us-west1-a \
+  --master-machine-type=e2-standard-4 \
+  --worker-machine-type=e2-standard-4 \
+  --num-workers=2 \
+  --image-version=2.1-debian11 \
+  --optional-components=JUPYTER \
+  --enable-component-gateway \
+  --bucket=your_bucket_name
+```
+
+
+### 3.2 Snowflake Initialization
+Run the initialization script via SnowSQL to create the database, schemas, and the external stage linked to your GCS bucket:
+
+```bash
+snowsql -a <account> -u <user> -r <role> -w <warehouse> \
+-d NYC_HOUSING_DB -s STAGING \
+-f sql/NYC_HOUSING_DB.sql
+```
+
+Once you have everything setup, make sure to update your `pipeline.env` file with the matching info.
+
+### 3.3 Python Environment Setup
+
+This project uses Python for data ingestion and orchestration scripts. Follow these steps to prepare your local environment.
+
+### 3.4 Recommended: Use a Virtual Environment
+Create and activate a virtual environment to isolate project dependencies:
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+```
+### 3.5 Install Dependencies
+Ensure your package manager is up to date and install the required libraries:
+
+```Bash
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+### 3.6 Verify Installation
+Run this one-liner to confirm that the critical libraries are correctly installed:
+
+```Bash
+python -c "import requests, pandas, google.cloud.storage"
+```
+
+If no errors appear, your Python environment is ready.
+
+### 3.7 Additional System Dependencies
+The pipeline relies on the following CLI tools for orchestration:
+
+1. Google Cloud SDK (gcloud)
+Used for submitting Spark jobs to Dataproc.
+
+Install (macOS): ```brew install --cask google-cloud-sdk```
+
+Initialize:
+
+```Bash
+gcloud init
+gcloud auth application-default login
+```
+
+2. SnowSQL (Snowflake CLI)
+Used to execute SQL scripts directly from the pipeline.
+
+Install (macOS): ```brew install --cask snowflake-snowsql```
+
+Verify: ```snowsql -v```
+
+3. Java (Required for PySpark)
+Spark requires a Java Runtime Environment:
+
+Install (macOS): ```brew install openjdk```
+
+### 3.8 Environment Notes
+Spark Execution: Dataproc clusters already include Spark; local PySpark is primarily used for unit testing.
+Execution: As long as Dataproc is configured, the pipeline will function even without a full local Spark installation.
+Authentication: Ensure your GCP authentication session is active before triggering pipeline.sh.
 
 ---
 
-### NYC housing signals pipeline
+## 4. How to Run the Pipeline
 
-UCLA MSBA team project · Pipeline lead · [Repository](https://github.com/Jess-ChangTW/nyc-housing-signals-pipeline)
+From the pipeline/ directory, run:
 
-Tested whether NYC 311 nuisance complaints act as a leading indicator of home value growth at the ZIP-code level, 2020-2024, ahead of slower Census updates. I built the data pipeline, from raw data cleaning in PySpark to the gold table used for analysis.
+```bash
+bash pipeline.sh
+```
 
-**What I built**
-- PySpark jobs on Google Cloud Dataproc that clean and standardize three sources: NYC 311 Open Data (incremental daily loads, filtered to the needed fields), Zillow Home Value Index (reshaped from a wide monthly time series to long format) and US Census ACS 5-year estimates (income, education, population).
-- A two-tier Snowflake warehouse: a staging layer loaded from Parquet files in Google Cloud Storage, and a production star schema with ZIP, year and complaint-type dimensions.
-- The gold fact table at ZIP x year grain, joining home values, complaint counts, income and education, with complaints per 1,000 residents, year-over-year changes and signals adjusted against the citywide average for each year.
-- SQL validation checks for grain, row counts and missing values.
+Pipeline Phases
+- Phase 0 (Census & Population): Pulls 2020–2024 data from Census API and transforms JSON to Parquet via Spark.
+- Phase 1 (Zillow): Downloads dataset and converts wide time series to long format.
+- Phase 2 (311): Daily incremental pull of complaint data with filtering and column reduction.
+- Phase 3 (Snowflake Loading): Refreshes external stage and loads 311, Zillow, Census, and Population data.
+- Phase 4 (Modeling): Runs sql/Final_Table.sql to create Dimensions and Fact tables.
+- Phase 5 (Validation): Runs sql/Quick_Checker.sql to check row counts and data sanity.
+- Phase 6 (Analytics): Runs sql/Analytics.sql for summary queries and trend exploration.
 
-**Result.** The table powered the team's analysis, which found that changes in complaint rates were weak predictors of home value growth, while income and education were much stronger signals.
+If you see an error message related to cluster processing overload, please stop the cluster and restart it.
 
-**Tools.** PySpark, Google Cloud (GCS, Dataproc), Snowflake, SQL, Python
+Note: The `pipeline.sh` is modded to catch a single day of 311 data, as pulling the full 5-year data from 311 will take a long time (probably days). In the same folder there is a `pipeline_full_five_years.sh` that covers the full scope of our project. 
+
+--- 
+
+## 5. Final Output
+ Main Table: `NYC_HOUSING_DB.PRODUCTION.FCT_NYC_HOUSING_SIGNALS_YEARLY`
+
+Grain: `zip_code` x `year`
+
+Included Data:
+- Housing prices and Year-over-Year changes
+- Complaint counts and rates per population
+- Income and Education metrics
+- Adjusted signals for modeling
+
+Structure(Dimensions/Facts):
+<img width="1536" height="1024" alt="ChatGPT Image Mar 20, 2026, 11_39_06 PM" src="https://github.com/user-attachments/assets/d553586d-7745-4e89-bc2a-fc4be0dc5b00" />
 
 ---
 
-### Other work
+## 6. Tableau
 
-**Multi-level genre classification** · UCLA MSBA capstone with Sony Pictures Television (in progress). Visualization and documentation lead.
+After connecting to Tableau <-> Snowflake using Tableau Desktop, we have created interactive dashboards.
 
-**Bobyard**, Data & GTM Operations Intern (2026). Built Python scrapers for public contractor license databases in several US states and UK procurement data; cleaned and deduplicated the results and supported customer-profile analysis in SQL.
+Here's the link to the publicly published Tableau Dashboard.
 
-**LINE Taiwan**, Data Analyst. Community content and short video analytics.
-
-### Skills
-
-Python (pandas, scikit-learn, statsmodels, PySpark), SQL, R, Tableau, Snowflake, Google Cloud, Airflow, Gurobi
+https://public.tableau.com/app/profile/jinwoo.roh/viz/405_Team5/Story1?publish=yes
